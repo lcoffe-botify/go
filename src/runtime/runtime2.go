@@ -862,7 +862,8 @@ type schedt struct {
 	// with a waitreason of the form waitReasonSync{RW,}Mutex{R,}Lock.
 	totalMutexWaitTime atomic.Int64
 
-	eventTrace *circbuf.CircularBuffer[*eventTraceElement]
+	eventTrace   *circbuf.CircularBuffer[*eventTraceElement]
+	crashPending atomic.Bool
 }
 
 // Values for the flags field of a sigTabT.

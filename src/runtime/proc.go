@@ -2406,7 +2406,7 @@ func mspinning() {
 // Must not have write barriers because this may be called without a P.
 //
 //go:nowritebarrierrec
-func startm(pp *p, spinning bool) {
+func startm(pp *p, spinning bool, lockheld bool) {
 	// Disable preemption.
 	//
 	// Every owned P must have an owner that will eventually stop it in the
@@ -2424,9 +2424,12 @@ func startm(pp *p, spinning bool) {
 	// startm. Callers passing a nil P may be preemptible, so we must
 	// disable preemption before acquiring a P from pidleget below.
 	mp := acquirem()
-	pushEventTrace("startm acquiring sched lock")
-	lock(&sched.lock)
-	pushEventTrace("startm acquired sched lock")
+
+	if !lockheld {
+		pushEventTrace("startm acquiring sched lock")
+		lock(&sched.lock)
+		pushEventTrace("startm acquired sched lock")
+	}
 	if pp == nil {
 		if spinning {
 			// TODO(prattmic): All remaining calls to this function
@@ -2436,9 +2439,11 @@ func startm(pp *p, spinning bool) {
 		}
 		pp, _ = pidleget(0)
 		if pp == nil {
-			pushEventTrace("mcommoninit releasing sched lock (1)")
-			unlock(&sched.lock)
-			pushEventTrace("mcommoninit released sched lock (1)")
+			if !lockheld {
+				pushEventTrace("mcommoninit releasing sched lock (1)")
+				unlock(&sched.lock)
+				pushEventTrace("mcommoninit released sched lock (1)")
+			}
 			releasem(mp)
 			return
 		}
@@ -2458,9 +2463,11 @@ func startm(pp *p, spinning bool) {
 		// new M will eventually run the scheduler to execute any
 		// queued G's.
 		id := mReserveID()
-		pushEventTrace("mcommoninit releasing sched lock (2)")
-		unlock(&sched.lock)
-		pushEventTrace("mcommoninit released sched lock (2)")
+		if !lockheld {
+			pushEventTrace("mcommoninit releasing sched lock (2)")
+			unlock(&sched.lock)
+			pushEventTrace("mcommoninit released sched lock (2)")
+		}
 
 		var fn func()
 		if spinning {
@@ -2473,9 +2480,11 @@ func startm(pp *p, spinning bool) {
 		releasem(mp)
 		return
 	}
-	pushEventTrace("mcommoninit releasing sched lock (3)")
-	unlock(&sched.lock)
-	pushEventTrace("mcommoninit released sched lock (3)")
+	if !lockheld {
+		pushEventTrace("mcommoninit releasing sched lock (3)")
+		unlock(&sched.lock)
+		pushEventTrace("mcommoninit released sched lock (3)")
+	}
 	if nmp.spinning {
 		throw("startm: m is spinning")
 	}
@@ -2504,24 +2513,24 @@ func handoffp(pp *p) {
 
 	// if it has local work, start it straight away
 	if !runqempty(pp) || sched.runqsize != 0 {
-		startm(pp, false)
+		startm(pp, false, false)
 		return
 	}
 	// if there's trace work to do, start it straight away
 	if (trace.enabled || trace.shutdown) && traceReaderAvailable() != nil {
-		startm(pp, false)
+		startm(pp, false, false)
 		return
 	}
 	// if it has GC work, start it straight away
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(pp) {
-		startm(pp, false)
+		startm(pp, false, false)
 		return
 	}
 	// no local work, check that there are no spinning/idle M's,
 	// otherwise our help is not required
 	if sched.nmspinning.Load()+sched.npidle.Load() == 0 && sched.nmspinning.CompareAndSwap(0, 1) { // TODO: fast atomic
 		sched.needspinning.Store(0)
-		startm(pp, true)
+		startm(pp, true, false)
 		return
 	}
 	pushEventTrace("handoffp acquiring sched lock")
@@ -2549,7 +2558,7 @@ func handoffp(pp *p) {
 		pushEventTrace("mcommoninit releasing sched lock (2)")
 		unlock(&sched.lock)
 		pushEventTrace("mcommoninit released sched lock (2)")
-		startm(pp, false)
+		startm(pp, false, false)
 		return
 	}
 	// If this is the last running P and nobody is polling network,
@@ -2558,7 +2567,7 @@ func handoffp(pp *p) {
 		pushEventTrace("mcommoninit releasing sched lock (3)")
 		unlock(&sched.lock)
 		pushEventTrace("mcommoninit released sched lock (3)")
-		startm(pp, false)
+		startm(pp, false, false)
 		return
 	}
 
@@ -2615,7 +2624,7 @@ func wakep() {
 	unlock(&sched.lock)
 	pushEventTrace("wakep released sched lock (2)")
 
-	startm(pp, true)
+	startm(pp, true, false)
 
 	releasem(mp)
 }
@@ -2957,6 +2966,7 @@ top:
 		throw("findrunnable: wrong p")
 	}
 	now = pidleput(pp, now)
+	sched.crashPending.Store(true)
 	pushEventTrace("findRunnable releasing sched lock (6)")
 	unlock(&sched.lock)
 	pushEventTrace("findRunnable released sched lock (6)")
@@ -3076,6 +3086,7 @@ top:
 			stopm()
 			goto top
 		}
+
 		pushEventTrace("findRunnable acquiring sched lock (4)")
 		lock(&sched.lock)
 		pushEventTrace("findRunnable acquired sched lock (4)")
@@ -3083,6 +3094,8 @@ top:
 		pushEventTrace("findRunnable releasing sched lock (7)")
 		unlock(&sched.lock)
 		pushEventTrace("findRunnable released sched lock (7)")
+		sched.crashPending.Store(false)
+
 		if pp == nil {
 			injectglist(&list)
 		} else {
@@ -3416,10 +3429,17 @@ func injectglist(glist *gList) {
 				break
 			}
 
+			if sched.crashPending.Load() {
+				pushEventTrace("[checkdead] should have crashed")
+				sched.crashPending.Store(false)
+			}
+
+			startm(pp, false, true)
+
 			pushEventTrace("injectglist releasing sched lock (2)")
 			unlock(&sched.lock)
 			pushEventTrace("injectglist released sched lock (2)")
-			startm(pp, false)
+
 			releasem(mp)
 		}
 	}
@@ -5647,7 +5667,7 @@ func sysmon() {
 			// See issue 42515 and
 			// https://gnats.netbsd.org/cgi-bin/query-pr-single.pl?number=50094.
 			if next := timeSleepUntil(); next < now {
-				startm(nil, false)
+				startm(nil, false, false)
 			}
 		}
 		if scavenger.sysmonWake.Load() != 0 {
@@ -5932,7 +5952,7 @@ func schedEnableUser(enable bool) {
 		unlock(&sched.lock)
 		pushEventTrace("schedEnableUser released sched lock (2)")
 		for ; n != 0 && sched.npidle.Load() != 0; n-- {
-			startm(nil, false)
+			startm(nil, false, false)
 		}
 	} else {
 		pushEventTrace("schedEnableUser releasing sched lock (3)")
