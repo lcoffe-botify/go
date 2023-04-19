@@ -222,9 +222,14 @@ func debugCallWrap1() {
 		}
 		casgstatus(gp, _Grunning, _Grunnable)
 		dropg()
+
+		pushEventTrace("debugCallWrap1 acquiring sched lock")
 		lock(&sched.lock)
+		pushEventTrace("debugCallWrap1 acquired sched lock")
 		globrunqput(gp)
+		pushEventTrace("debugCallWrap1 releasing sched lock")
 		unlock(&sched.lock)
+		pushEventTrace("debugCallWrap1 released sched lock")
 
 		if trace.enabled {
 			traceGoUnpark(callingG, 0)

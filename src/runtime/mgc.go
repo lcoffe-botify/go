@@ -1353,9 +1353,13 @@ func gcBgMarkWorker() {
 					// queue so it can run
 					// somewhere else.
 					if drainQ, n := runqdrain(pp); n > 0 {
+						pushEventTrace("runqdrain acquiring sched lock")
 						lock(&sched.lock)
+						pushEventTrace("runqdrain acquired sched lock")
 						globrunqputbatch(&drainQ, int32(n))
+						pushEventTrace("runqdrain releasing sched lock")
 						unlock(&sched.lock)
+						pushEventTrace("runqdrain released sched lock")
 					}
 				}
 				// Go back to draining, this time

@@ -7,6 +7,7 @@ package runtime
 import (
 	"internal/goarch"
 	"runtime/internal/atomic"
+	"runtime/internal/circbuf"
 	"unsafe"
 )
 
@@ -860,6 +861,8 @@ type schedt struct {
 	// totalMutexWaitTime is the sum of time goroutines have spent in _Gwaiting
 	// with a waitreason of the form waitReasonSync{RW,}Mutex{R,}Lock.
 	totalMutexWaitTime atomic.Int64
+
+	eventTrace *circbuf.CircularBuffer[*eventTraceElement]
 }
 
 // Values for the flags field of a sigTabT.

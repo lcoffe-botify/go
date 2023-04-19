@@ -748,6 +748,9 @@ func schedinit() {
 	}
 	unlock(&sched.lock)
 
+	// init event trace
+	initEventTrace()
+
 	// World is effectively started now, as P's can run.
 	worldStarted()
 
@@ -815,7 +818,9 @@ func mcommoninit(mp *m, id int64) {
 		callers(1, mp.createstack[:])
 	}
 
+	pushEventTrace("mcommoninit acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("mcommoninit acquired sched lock")
 
 	if id >= 0 {
 		mp.id = id
@@ -848,7 +853,9 @@ func mcommoninit(mp *m, id int64) {
 	// NumCgoCall() iterates over allm w/o schedlock,
 	// so we need to publish it safely.
 	atomicstorep(unsafe.Pointer(&allm), unsafe.Pointer(mp))
+	pushEventTrace("mcommoninit releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("mcommoninit released sched lock")
 
 	// Allocate memory to hold a cgo traceback if the cgo call crashes.
 	if iscgo || GOOS == "solaris" || GOOS == "illumos" || GOOS == "windows" {
@@ -1258,7 +1265,9 @@ func stopTheWorldWithSema() {
 		throw("stopTheWorld: holding locks")
 	}
 
+	pushEventTrace("stopTheWorldWithSema acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("stopTheWorldWithSema acquired sched lock")
 	sched.stopwait = gomaxprocs
 	sched.gcwaiting.Store(true)
 	preemptall()
@@ -1288,7 +1297,9 @@ func stopTheWorldWithSema() {
 		sched.stopwait--
 	}
 	wait := sched.stopwait > 0
+	pushEventTrace("stopTheWorldWithSema releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("stopTheWorldWithSema released sched lock")
 
 	// wait for remaining P's to stop voluntarily
 	if wait {
@@ -1336,7 +1347,9 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 		list := netpoll(0) // non-blocking
 		injectglist(&list)
 	}
+	pushEventTrace("startTheWorldWithSema acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("startTheWorldWithSema acquired sched lock")
 
 	procs := gomaxprocs
 	if newprocs != 0 {
@@ -1349,7 +1362,9 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 		sched.sysmonwait.Store(false)
 		notewakeup(&sched.sysmonnote)
 	}
+	pushEventTrace("startTheWorldWithSema releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("startTheWorldWithSema released sched lock")
 
 	worldStarted()
 
@@ -1557,10 +1572,14 @@ func mexit(osStack bool) {
 		// We could try to clean up this M more before wedging
 		// it, but that complicates signal handling.
 		handoffp(releasep())
+		pushEventTrace("mexit acquiring sched lock (main)")
 		lock(&sched.lock)
+		pushEventTrace("mexit acquired sched lock (main)")
 		sched.nmfreed++
 		checkdead()
+		pushEventTrace("mexit releasing sched lock (main)")
 		unlock(&sched.lock)
+		pushEventTrace("mexit released sched lock (main)")
 		mPark()
 		throw("locked m0 woke up")
 	}
@@ -1579,7 +1598,9 @@ func mexit(osStack bool) {
 	}
 
 	// Remove m from allm.
+	pushEventTrace("mexit acquiring sched lock (1)")
 	lock(&sched.lock)
+	pushEventTrace("mexit acquired sched lock (1)")
 	for pprev := &allm; *pprev != nil; pprev = &(*pprev).alllink {
 		if *pprev == mp {
 			*pprev = mp.alllink
@@ -1600,7 +1621,9 @@ found:
 	mp.freeWait.Store(freeMWait)
 	mp.freelink = sched.freem
 	sched.freem = mp
+	pushEventTrace("mexit releasing sched lock (1)")
 	unlock(&sched.lock)
+	pushEventTrace("mexit released sched lock (1)")
 
 	atomic.Xadd64(&ncgocall, int64(mp.ncgocall))
 
@@ -1611,10 +1634,14 @@ found:
 	// Invoke the deadlock detector. This must happen after
 	// handoffp because it may have started a new M to take our
 	// P's work.
+	pushEventTrace("mexit acquiring sched lock (2)")
 	lock(&sched.lock)
+	pushEventTrace("mexit acquired sched lock (2)")
 	sched.nmfreed++
 	checkdead()
+	pushEventTrace("mexit releasing sched lock (2)")
 	unlock(&sched.lock)
+	pushEventTrace("mexit released sched lock (2)")
 
 	if GOOS == "darwin" || GOOS == "ios" {
 		// Make sure pendingPreemptSignals is correct when an M exits.
@@ -1659,7 +1686,9 @@ func forEachP(fn func(*p)) {
 	mp := acquirem()
 	pp := getg().m.p.ptr()
 
+	pushEventTrace("forEachP acquiring sched lock (1)")
 	lock(&sched.lock)
+	pushEventTrace("forEachP acquired sched lock (1)")
 	if sched.safePointWait != 0 {
 		throw("forEachP: sched.safePointWait != 0")
 	}
@@ -1688,7 +1717,9 @@ func forEachP(fn func(*p)) {
 	}
 
 	wait := sched.safePointWait > 0
+	pushEventTrace("forEachP releasing sched lock (1)")
 	unlock(&sched.lock)
+	pushEventTrace("forEachP released sched lock (1)")
 
 	// Run fn for the current P.
 	fn(pp)
@@ -1730,9 +1761,13 @@ func forEachP(fn func(*p)) {
 		}
 	}
 
+	pushEventTrace("forEachP acquiring sched lock (2)")
 	lock(&sched.lock)
+	pushEventTrace("forEachP acquired sched lock (2)")
 	sched.safePointFn = nil
+	pushEventTrace("forEachP releasing sched lock (2)")
 	unlock(&sched.lock)
+	pushEventTrace("forEachP released sched lock (2)")
 	releasem(mp)
 }
 
@@ -1756,12 +1791,16 @@ func runSafePointFn() {
 		return
 	}
 	sched.safePointFn(p)
+	pushEventTrace("runSafePointFn acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("runSafePointFn acquired sched lock")
 	sched.safePointWait--
 	if sched.safePointWait == 0 {
 		notewakeup(&sched.safePointNote)
 	}
+	pushEventTrace("runSafePointFn releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("runSafePointFn released sched lock")
 }
 
 // When running with cgo, we call _cgo_thread_start
@@ -1800,7 +1839,9 @@ func allocm(pp *p, fn func(), id int64) *m {
 	// Release the free M list. We need to do this somewhere and
 	// this may free up a stack we can use.
 	if sched.freem != nil {
+		pushEventTrace("allocm acquiring sched lock")
 		lock(&sched.lock)
+		pushEventTrace("allocm acquired sched lock")
 		var newList *m
 		for freem := sched.freem; freem != nil; {
 			wait := freem.freeWait.Load()
@@ -1825,7 +1866,9 @@ func allocm(pp *p, fn func(), id int64) *m {
 			freem = freem.freelink
 		}
 		sched.freem = newList
+		pushEventTrace("allocm releasing sched lock")
 		unlock(&sched.lock)
+		pushEventTrace("allocm released sched lock")
 	}
 
 	mp := new(m)
@@ -2287,10 +2330,14 @@ func startTemplateThread() {
 //
 //go:nowritebarrierrec
 func templateThread() {
+	pushEventTrace("templateThread acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("templateThread acquired sched lock")
 	sched.nmsys++
 	checkdead()
+	pushEventTrace("templateThread releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("templateThread released sched lock")
 
 	for {
 		lock(&newmHandoff.lock)
@@ -2328,9 +2375,15 @@ func stopm() {
 		throw("stopm spinning")
 	}
 
+	pushEventTrace("stopm acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("stopm acquired sched lock")
+
 	mput(gp.m)
+	pushEventTrace("stopm releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("stopm released sched lock")
+
 	mPark()
 	acquirep(gp.m.nextp.ptr())
 	gp.m.nextp = 0
@@ -2371,7 +2424,9 @@ func startm(pp *p, spinning bool) {
 	// startm. Callers passing a nil P may be preemptible, so we must
 	// disable preemption before acquiring a P from pidleget below.
 	mp := acquirem()
+	pushEventTrace("startm acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("startm acquired sched lock")
 	if pp == nil {
 		if spinning {
 			// TODO(prattmic): All remaining calls to this function
@@ -2381,7 +2436,9 @@ func startm(pp *p, spinning bool) {
 		}
 		pp, _ = pidleget(0)
 		if pp == nil {
+			pushEventTrace("mcommoninit releasing sched lock (1)")
 			unlock(&sched.lock)
+			pushEventTrace("mcommoninit released sched lock (1)")
 			releasem(mp)
 			return
 		}
@@ -2401,7 +2458,9 @@ func startm(pp *p, spinning bool) {
 		// new M will eventually run the scheduler to execute any
 		// queued G's.
 		id := mReserveID()
+		pushEventTrace("mcommoninit releasing sched lock (2)")
 		unlock(&sched.lock)
+		pushEventTrace("mcommoninit released sched lock (2)")
 
 		var fn func()
 		if spinning {
@@ -2414,7 +2473,9 @@ func startm(pp *p, spinning bool) {
 		releasem(mp)
 		return
 	}
+	pushEventTrace("mcommoninit releasing sched lock (3)")
 	unlock(&sched.lock)
+	pushEventTrace("mcommoninit released sched lock (3)")
 	if nmp.spinning {
 		throw("startm: m is spinning")
 	}
@@ -2463,14 +2524,18 @@ func handoffp(pp *p) {
 		startm(pp, true)
 		return
 	}
+	pushEventTrace("handoffp acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("handoffp acquired sched lock")
 	if sched.gcwaiting.Load() {
 		pp.status = _Pgcstop
 		sched.stopwait--
 		if sched.stopwait == 0 {
 			notewakeup(&sched.stopnote)
 		}
+		pushEventTrace("mcommoninit releasing sched lock (1)")
 		unlock(&sched.lock)
+		pushEventTrace("mcommoninit released sched lock (1)")
 		return
 	}
 	if pp.runSafePointFn != 0 && atomic.Cas(&pp.runSafePointFn, 1, 0) {
@@ -2481,14 +2546,18 @@ func handoffp(pp *p) {
 		}
 	}
 	if sched.runqsize != 0 {
+		pushEventTrace("mcommoninit releasing sched lock (2)")
 		unlock(&sched.lock)
+		pushEventTrace("mcommoninit released sched lock (2)")
 		startm(pp, false)
 		return
 	}
 	// If this is the last running P and nobody is polling network,
 	// need to wakeup another M to poll network.
 	if sched.npidle.Load() == gomaxprocs-1 && sched.lastpoll.Load() != 0 {
+		pushEventTrace("mcommoninit releasing sched lock (3)")
 		unlock(&sched.lock)
+		pushEventTrace("mcommoninit released sched lock (3)")
 		startm(pp, false)
 		return
 	}
@@ -2497,7 +2566,9 @@ func handoffp(pp *p) {
 	// because wakeNetPoller may call wakep which may call startm.
 	when := nobarrierWakeTime(pp)
 	pidleput(pp, 0)
+	pushEventTrace("mcommoninit releasing sched lock (4)")
 	unlock(&sched.lock)
+	pushEventTrace("mcommoninit released sched lock (4)")
 
 	if when != 0 {
 		wakeNetPoller(when)
@@ -2522,13 +2593,17 @@ func wakep() {
 	mp := acquirem()
 
 	var pp *p
+	pushEventTrace("wakep acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("wakep acquired sched lock")
 	pp, _ = pidlegetSpinning(0)
 	if pp == nil {
 		if sched.nmspinning.Add(-1) < 0 {
 			throw("wakep: negative nmspinning")
 		}
+		pushEventTrace("wakep releasing sched lock (1)")
 		unlock(&sched.lock)
+		pushEventTrace("wakep released sched lock (1)")
 		releasem(mp)
 		return
 	}
@@ -2536,7 +2611,9 @@ func wakep() {
 	// comment in startm doesn't apply during the small window between the
 	// unlock here and lock in startm. A checkdead in between will always
 	// see at least one running M (ours).
+	pushEventTrace("wakep releasing sched lock (2)")
 	unlock(&sched.lock)
+	pushEventTrace("wakep released sched lock (2)")
 
 	startm(pp, true)
 
@@ -2606,13 +2683,17 @@ func gcstopm() {
 		}
 	}
 	pp := releasep()
+	pushEventTrace("gcstopm acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("gcstopm acquired sched lock")
 	pp.status = _Pgcstop
 	sched.stopwait--
 	if sched.stopwait == 0 {
 		notewakeup(&sched.stopnote)
 	}
+	pushEventTrace("gcstopm releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("gcstopm released sched lock")
 	stopm()
 }
 
@@ -2715,9 +2796,13 @@ top:
 	// Otherwise two goroutines can completely occupy the local runqueue
 	// by constantly respawning each other.
 	if pp.schedtick%61 == 0 && sched.runqsize > 0 {
+		pushEventTrace("findRunnable acquiring sched lock (1)")
 		lock(&sched.lock)
+		pushEventTrace("findRunnable acquired sched lock (1)")
 		gp := globrunqget(pp, 1)
+		pushEventTrace("findRunnable releasing sched lock (1)")
 		unlock(&sched.lock)
+		pushEventTrace("findRunnable released sched lock (1)")
 		if gp != nil {
 			return gp, false, false
 		}
@@ -2740,9 +2825,13 @@ top:
 
 	// global runq
 	if sched.runqsize != 0 {
+		pushEventTrace("findRunnable acquiring sched lock (2)")
 		lock(&sched.lock)
+		pushEventTrace("findRunnable acquired sched lock (2)")
 		gp := globrunqget(pp, 0)
+		pushEventTrace("findRunnable releasing sched lock (2)")
 		unlock(&sched.lock)
+		pushEventTrace("findRunnable released sched lock (2)")
 		if gp != nil {
 			return gp, false, false
 		}
@@ -2840,27 +2929,37 @@ top:
 	timerpMaskSnapshot := timerpMask
 
 	// return P and block
+	pushEventTrace("findRunnable acquiring sched lock (3)")
 	lock(&sched.lock)
+	pushEventTrace("findRunnable acquired sched lock (3)")
 	if sched.gcwaiting.Load() || pp.runSafePointFn != 0 {
+		pushEventTrace("findRunnable releasing sched lock (3)")
 		unlock(&sched.lock)
+		pushEventTrace("findRunnable released sched lock (3)")
 		goto top
 	}
 	if sched.runqsize != 0 {
 		gp := globrunqget(pp, 0)
+		pushEventTrace("findRunnable releasing sched lock (4)")
 		unlock(&sched.lock)
+		pushEventTrace("findRunnable released sched lock (4)")
 		return gp, false, false
 	}
 	if !mp.spinning && sched.needspinning.Load() == 1 {
 		// See "Delicate dance" comment below.
 		mp.becomeSpinning()
+		pushEventTrace("findRunnable releasing sched lock (5)")
 		unlock(&sched.lock)
+		pushEventTrace("findRunnable released sched lock (5)")
 		goto top
 	}
 	if releasep() != pp {
 		throw("findrunnable: wrong p")
 	}
 	now = pidleput(pp, now)
+	pushEventTrace("findRunnable releasing sched lock (6)")
 	unlock(&sched.lock)
+	pushEventTrace("findRunnable released sched lock (6)")
 
 	// Delicate dance: thread transitions from spinning to non-spinning
 	// state, potentially concurrently with submission of new work. We must
@@ -2977,9 +3076,13 @@ top:
 			stopm()
 			goto top
 		}
+		pushEventTrace("findRunnable acquiring sched lock (4)")
 		lock(&sched.lock)
+		pushEventTrace("findRunnable acquired sched lock (4)")
 		pp, _ := pidleget(now)
+		pushEventTrace("findRunnable releasing sched lock (7)")
 		unlock(&sched.lock)
+		pushEventTrace("findRunnable released sched lock (7)")
 		if pp == nil {
 			injectglist(&list)
 		} else {
@@ -3004,6 +3107,8 @@ top:
 			netpollBreak()
 		}
 	}
+
+	pushEventTrace("findRunnable: no runnable G")
 	stopm()
 	goto top
 }
@@ -3112,14 +3217,20 @@ func stealWork(now int64) (gp *g, inheritTime bool, rnow, pollUntil int64, newWo
 func checkRunqsNoP(allpSnapshot []*p, idlepMaskSnapshot pMask) *p {
 	for id, p2 := range allpSnapshot {
 		if !idlepMaskSnapshot.read(uint32(id)) && !runqempty(p2) {
+			pushEventTrace("checkRunqsNoP acquiring sched lock")
 			lock(&sched.lock)
+			pushEventTrace("checkRunqsNoP acquired sched lock")
 			pp, _ := pidlegetSpinning(0)
 			if pp == nil {
 				// Can't get a P, don't bother checking remaining Ps.
+				pushEventTrace("checkRunqsNoP releasing sched lock (1)")
 				unlock(&sched.lock)
+				pushEventTrace("checkRunqsNoP released sched lock (1)")
 				return nil
 			}
+			pushEventTrace("checkRunqsNoP releasing sched lock (2)")
 			unlock(&sched.lock)
+			pushEventTrace("checkRunqsNoP released sched lock (2)")
 			return pp
 		}
 	}
@@ -3179,29 +3290,39 @@ func checkIdleGCNoP() (*p, *g) {
 	// If we were to check gcBgMarkWorkerPool first, we must somehow handle
 	// the assumption in gcControllerState.findRunnableGCWorker that an
 	// empty gcBgMarkWorkerPool is only possible if gcMarkDone is running.
+	pushEventTrace("checkIdleGCNoP acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("checkIdleGCNoP acquired sched lock")
 	pp, now := pidlegetSpinning(0)
 	if pp == nil {
+		pushEventTrace("checkIdleGCNoP releasing sched lock (1)")
 		unlock(&sched.lock)
+		pushEventTrace("checkIdleGCNoP released sched lock (1)")
 		return nil, nil
 	}
 
 	// Now that we own a P, gcBlackenEnabled can't change (as it requires STW).
 	if gcBlackenEnabled == 0 || !gcController.addIdleMarkWorker() {
 		pidleput(pp, now)
+		pushEventTrace("checkIdleGCNoP releasing sched lock (2)")
 		unlock(&sched.lock)
+		pushEventTrace("checkIdleGCNoP released sched lock (2)")
 		return nil, nil
 	}
 
 	node := (*gcBgMarkWorkerNode)(gcBgMarkWorkerPool.pop())
 	if node == nil {
 		pidleput(pp, now)
+		pushEventTrace("checkIdleGCNoP releasing sched lock (2)")
 		unlock(&sched.lock)
+		pushEventTrace("checkIdleGCNoP released sched lock (2)")
 		gcController.removeIdleMarkWorker()
 		return nil, nil
 	}
 
+	pushEventTrace("checkIdleGCNoP releasing sched lock (3)")
 	unlock(&sched.lock)
+	pushEventTrace("checkIdleGCNoP released sched lock (3)")
 
 	return pp, node.gp.ptr()
 }
@@ -3282,16 +3403,22 @@ func injectglist(glist *gList) {
 	startIdle := func(n int) {
 		for i := 0; i < n; i++ {
 			mp := acquirem() // See comment in startm.
+			pushEventTrace("injectglist acquiring sched lock (1)")
 			lock(&sched.lock)
+			pushEventTrace("injectglist acquired sched lock (1)")
 
 			pp, _ := pidlegetSpinning(0)
 			if pp == nil {
+				pushEventTrace("injectglist releasing sched lock (1)")
 				unlock(&sched.lock)
+				pushEventTrace("injectglist released sched lock (1)")
 				releasem(mp)
 				break
 			}
 
+			pushEventTrace("injectglist releasing sched lock (2)")
 			unlock(&sched.lock)
+			pushEventTrace("injectglist released sched lock (2)")
 			startm(pp, false)
 			releasem(mp)
 		}
@@ -3299,9 +3426,13 @@ func injectglist(glist *gList) {
 
 	pp := getg().m.p.ptr()
 	if pp == nil {
+		pushEventTrace("injectglist acquiring sched lock (2)")
 		lock(&sched.lock)
+		pushEventTrace("injectglist acquired sched lock (2)")
 		globrunqputbatch(&q, int32(qsize))
+		pushEventTrace("injectglist releasing sched lock (3)")
 		unlock(&sched.lock)
+		pushEventTrace("injectglist released sched lock (3)")
 		startIdle(qsize)
 		return
 	}
@@ -3314,9 +3445,13 @@ func injectglist(glist *gList) {
 		globq.pushBack(g)
 	}
 	if n > 0 {
+		pushEventTrace("injectglist acquiring sched lock (3)")
 		lock(&sched.lock)
+		pushEventTrace("injectglist acquired sched lock (3)")
 		globrunqputbatch(&globq, int32(n))
+		pushEventTrace("injectglist releasing sched lock (4)")
 		unlock(&sched.lock)
+		pushEventTrace("injectglist released sched lock (4)")
 		startIdle(n)
 		qsize -= n
 	}
@@ -3370,15 +3505,21 @@ top:
 		// Scheduling of this goroutine is disabled. Put it on
 		// the list of pending runnable goroutines for when we
 		// re-enable user scheduling and look again.
+		pushEventTrace("schedule acquiring sched lock (1)")
 		lock(&sched.lock)
+		pushEventTrace("schedule acquired sched lock (1)")
 		if schedEnabled(gp) {
 			// Something re-enabled scheduling while we
 			// were acquiring the lock.
+			pushEventTrace("schedule releasing sched lock (1)")
 			unlock(&sched.lock)
+			pushEventTrace("schedule released sched lock (1)")
 		} else {
 			sched.disable.runnable.pushBack(gp)
 			sched.disable.n++
+			pushEventTrace("schedule releasing sched lock (2)")
 			unlock(&sched.lock)
+			pushEventTrace("schedule released sched lock (2)")
 			goto top
 		}
 	}
@@ -3519,9 +3660,13 @@ func goschedImpl(gp *g) {
 	}
 	casgstatus(gp, _Grunning, _Grunnable)
 	dropg()
+	pushEventTrace("goschedImpl acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("goschedImpl acquired sched lock")
 	globrunqput(gp)
+	pushEventTrace("goschedImpl releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("goschedImpl released sched lock")
 
 	schedule()
 }
@@ -3827,19 +3972,25 @@ func entersyscall() {
 }
 
 func entersyscall_sysmon() {
+	pushEventTrace("entersyscall_sysmon acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("entersyscall_sysmon acquired sched lock")
 	if sched.sysmonwait.Load() {
 		sched.sysmonwait.Store(false)
 		notewakeup(&sched.sysmonnote)
 	}
+	pushEventTrace("entersyscall_sysmon releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("entersyscall_sysmon released sched lock")
 }
 
 func entersyscall_gcwait() {
 	gp := getg()
 	pp := gp.m.oldp.ptr()
 
+	pushEventTrace("entersyscall_gcwait acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("entersyscall_gcwait acquired sched lock")
 	if sched.stopwait > 0 && atomic.Cas(&pp.status, _Psyscall, _Pgcstop) {
 		if trace.enabled {
 			traceGoSysBlock(pp)
@@ -3850,7 +4001,9 @@ func entersyscall_gcwait() {
 			notewakeup(&sched.stopnote)
 		}
 	}
+	pushEventTrace("entersyscall_gcwait releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("entersyscall_gcwait released sched lock")
 }
 
 // The same as entersyscall(), but with a hint that the syscall is blocking.
@@ -4064,13 +4217,17 @@ func exitsyscallfast_reacquired() {
 }
 
 func exitsyscallfast_pidle() bool {
+	pushEventTrace("exitsyscallfast_pidle acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("exitsyscallfast_pidle acquired sched lock")
 	pp, _ := pidleget(0)
 	if pp != nil && sched.sysmonwait.Load() {
 		sched.sysmonwait.Store(false)
 		notewakeup(&sched.sysmonnote)
 	}
+	pushEventTrace("exitsyscallfast_pidle releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("exitsyscallfast_pidle released sched lock")
 	if pp != nil {
 		acquirep(pp)
 		return true
@@ -4087,7 +4244,9 @@ func exitsyscallfast_pidle() bool {
 func exitsyscall0(gp *g) {
 	casgstatus(gp, _Gsyscall, _Grunnable)
 	dropg()
+	pushEventTrace("exitsyscall0 acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("exitsyscall0 acquired sched lock")
 	var pp *p
 	if schedEnabled(gp) {
 		pp, _ = pidleget(0)
@@ -4106,7 +4265,9 @@ func exitsyscall0(gp *g) {
 		sched.sysmonwait.Store(false)
 		notewakeup(&sched.sysmonnote)
 	}
+	pushEventTrace("exitsyscall0 releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("exitsyscall0 released sched lock")
 	if pp != nil {
 		acquirep(pp)
 		execute(gp, false) // Never returns.
@@ -4799,9 +4960,13 @@ func setcpuprofilerate(hz int32) {
 	}
 	prof.signalLock.Store(0)
 
+	pushEventTrace("setcpuprofilerate acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("setcpuprofilerate acquired sched lock")
 	sched.profilehz = hz
+	pushEventTrace("setcpuprofilerate releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("setcpuprofilerate released sched lock")
 
 	if hz != 0 {
 		setThreadCPUProfiler(hz)
@@ -5147,13 +5312,20 @@ func releasep() *p {
 }
 
 func incidlelocked(v int32) {
+	pushEventTrace("incidlelocked acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("incidlelocked acquired sched lock")
 	sched.nmidlelocked += v
 	if v > 0 {
 		checkdead()
 	}
+	pushEventTrace("incidlelocked releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("incidlelocked released sched lock")
 }
+
+var inconsistentStateCount uint8
+var inconsistentStateTime int64
 
 // Check for deadlock situation.
 // The check is based on number of running M's, if 0 -> deadlock.
@@ -5199,6 +5371,7 @@ func checkdead() {
 		throw("checkdead: inconsistent counts")
 	}
 
+	inconsistentState := false
 	grunning := 0
 	forEachG(func(gp *g) {
 		if isSystemGoroutine(gp, false) {
@@ -5212,12 +5385,82 @@ func checkdead() {
 		case _Grunnable,
 			_Grunning,
 			_Gsyscall:
-			print("runtime: checkdead: find g ", gp.goid, " in status ", s, "\n")
-			throw("checkdead: runnable g")
+
+			// no M is available - but at least one G is runnable/running or in a syscall; this is an inconsistent state
+			inconsistentState = true
+
+			// Although, if the G is runnable, this might just be a race condition as it was readied by an event right
+			// before the sched lock was acquired.
+			// If one of the G is running or in a syscall, then it's a real issue
+			if s&^_Gscan != _Grunnable {
+				print("runtime: checkdead: find g ", gp.goid, " in status ", s, "\n")
+				throw("checkdead: runnable g")
+			}
+
+			print("[checkdead] find g ", gp.goid, " in status ", s,
+				" - mcount=", mcount(), " sched.nmidle=", sched.nmidle, " sched.nmidlelocked=", sched.nmidlelocked,
+				" sched.nmsys=", sched.nmsys, " sched.nmspinning=", sched.nmspinning.Load(), "\n")
 		}
 	})
+
+	// if an inconsistent state due to a race condition was detected, then print some debug info
+	// panic if it we get too many occurences in a row, or if we've been stuck too much time without reaching this limit
+	if inconsistentState {
+		// increase the count of inconsistent state occurence
+		inconsistentStateCount++
+
+		// if we get inconsistent state too many times in a row, then panic
+		if inconsistentStateCount == 10 {
+			throw("runtime: checkdead: too many successive occurences of inconsistent state")
+		}
+
+		// if this is the first occurence of inconsistent state, save time
+		// else check for time stuck
+		if inconsistentStateCount == 1 {
+			inconsistentStateTime = nanotime()
+		} else if inconsistentStateTime < nanotime()-5e9 { // 5s
+			throw("runtime: checkdead: too much time stuck in successive occurences of inconsistent state")
+		}
+
+		printEventTrace()
+
+		// print the runtime stacktrace
+		{
+			print("[checkdead] runtime stack\n")
+			pc := getcallerpc()
+			sp := getcallersp()
+			gp := getg()
+			traceback(pc, sp, 0, gp)
+		}
+
+		// print G's state, omitting dead ones, with stacktraces for runnable ones
+		print("[checkdead] goroutines\n")
+		forEachG(func(gp *g) {
+			if isSystemGoroutine(gp, false) {
+				return
+			}
+
+			s := gp.atomicstatus.Load()
+
+			if s&^_Gscan == _Gdead {
+				return
+			}
+
+			goroutineheader(gp)
+			if s&^_Gscan == _Grunnable {
+				traceback(^uintptr(0), ^uintptr(0), 0, gp)
+			}
+		})
+	} else if inconsistentStateCount > 0 {
+		// things got back to normal, clear counters
+		inconsistentStateCount = 0
+		inconsistentStateTime = 0
+	}
+
 	if grunning == 0 { // possible if main goroutine calls runtime·Goexit()
+		pushEventTrace("checkdead releasing sched lock (1)")
 		unlock(&sched.lock) // unlock so that GODEBUG=scheddetail=1 doesn't hang
+		pushEventTrace("checkdead released sched lock (1)")
 		fatal("no goroutines (main called runtime.Goexit) - deadlock!")
 	}
 
@@ -5256,8 +5499,10 @@ func checkdead() {
 			return
 		}
 	}
-
+	pushEventTrace("checkdead releasing sched lock (2)")
 	unlock(&sched.lock) // unlock so that GODEBUG=scheddetail=1 doesn't hang
+	pushEventTrace("checkdead released sched lock (2)")
+
 	fatal("all goroutines are asleep - deadlock!")
 }
 
@@ -5276,10 +5521,14 @@ var needSysmonWorkaround bool = false
 //
 //go:nowritebarrierrec
 func sysmon() {
+	pushEventTrace("sysmon acquiring sched lock (1)")
 	lock(&sched.lock)
+	pushEventTrace("sysmon acquired sched lock (1)")
 	sched.nmsys++
 	checkdead()
+	pushEventTrace("sysmon releasing sched lock (1)")
 	unlock(&sched.lock)
+	pushEventTrace("sysmon released sched lock (1)")
 
 	lasttrace := int64(0)
 	idle := 0 // how many cycles in succession we had not wokeup somebody
@@ -5313,13 +5562,17 @@ func sysmon() {
 		// most of their time sleeping.
 		now := nanotime()
 		if debug.schedtrace <= 0 && (sched.gcwaiting.Load() || sched.npidle.Load() == gomaxprocs) {
+			pushEventTrace("sysmon acquiring sched lock (2)")
 			lock(&sched.lock)
+			pushEventTrace("sysmon acquired sched lock (2)")
 			if sched.gcwaiting.Load() || sched.npidle.Load() == gomaxprocs {
 				syscallWake := false
 				next := timeSleepUntil()
 				if next > now {
 					sched.sysmonwait.Store(true)
+					pushEventTrace("sysmon releasing sched lock (2)")
 					unlock(&sched.lock)
+					pushEventTrace("sysmon released sched lock (2)")
 					// Make wake-up period small enough
 					// for the sampling to be correct.
 					sleep := forcegcperiod / 2
@@ -5334,7 +5587,9 @@ func sysmon() {
 					if shouldRelax {
 						osRelax(false)
 					}
+					pushEventTrace("sysmon acquiring sched lock (3)")
 					lock(&sched.lock)
+					pushEventTrace("sysmon acquired sched lock (3)")
 					sched.sysmonwait.Store(false)
 					noteclear(&sched.sysmonnote)
 				}
@@ -5343,7 +5598,9 @@ func sysmon() {
 					delay = 20
 				}
 			}
+			pushEventTrace("sysmon releasing sched lock (3)")
 			unlock(&sched.lock)
+			pushEventTrace("sysmon released sched lock (3)")
 		}
 
 		lock(&sched.sysmonlock)
@@ -5564,7 +5821,10 @@ func schedtrace(detailed bool) {
 		starttime = now
 	}
 
+	pushEventTrace("schedtrace acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("schedtrace acquired sched lock")
+
 	print("SCHED ", (now-starttime)/1e6, "ms: gomaxprocs=", gomaxprocs, " idleprocs=", sched.npidle.Load(), " threads=", mcount(), " spinningthreads=", sched.nmspinning.Load(), " needspinning=", sched.needspinning.Load(), " idlethreads=", sched.nmidle, " runqueue=", sched.runqsize)
 	if detailed {
 		print(" gcwaiting=", sched.gcwaiting.Load(), " nmidlelocked=", sched.nmidlelocked, " stopwait=", sched.stopwait, " sysmonwait=", sched.sysmonwait.Load(), "\n")
@@ -5599,7 +5859,9 @@ func schedtrace(detailed bool) {
 	}
 
 	if !detailed {
+		pushEventTrace("schedtrace releasing sched lock (1)")
 		unlock(&sched.lock)
+		pushEventTrace("schedtrace released sched lock (1)")
 		return
 	}
 
@@ -5641,7 +5903,9 @@ func schedtrace(detailed bool) {
 		}
 		print("\n")
 	})
+	pushEventTrace("schedtrace releasing sched lock (2)")
 	unlock(&sched.lock)
+	pushEventTrace("schedtrace released sched lock (2)")
 }
 
 // schedEnableUser enables or disables the scheduling of user
@@ -5650,9 +5914,13 @@ func schedtrace(detailed bool) {
 // This does not stop already running user goroutines, so the caller
 // should first stop the world when disabling user goroutines.
 func schedEnableUser(enable bool) {
+	pushEventTrace("schedEnableUser acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("schedEnableUser acquired sched lock")
 	if sched.disable.user == !enable {
+		pushEventTrace("schedEnableUser releasing sched lock (1)")
 		unlock(&sched.lock)
+		pushEventTrace("schedEnableUser released sched lock (1)")
 		return
 	}
 	sched.disable.user = !enable
@@ -5660,12 +5928,16 @@ func schedEnableUser(enable bool) {
 		n := sched.disable.n
 		sched.disable.n = 0
 		globrunqputbatch(&sched.disable.runnable, n)
+		pushEventTrace("schedEnableUser releasing sched lock (2)")
 		unlock(&sched.lock)
+		pushEventTrace("schedEnableUser released sched lock (2)")
 		for ; n != 0 && sched.npidle.Load() != 0; n-- {
 			startm(nil, false)
 		}
 	} else {
+		pushEventTrace("schedEnableUser releasing sched lock (3)")
 		unlock(&sched.lock)
+		pushEventTrace("schedEnableUser released sched lock (3)")
 	}
 }
 
@@ -6027,9 +6299,14 @@ func runqputslow(pp *p, gp *g, h, t uint32) bool {
 	q.tail.set(batch[n])
 
 	// Now put the batch on global queue.
+	pushEventTrace("runqputslow acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("runqputslow acquired sched lock")
+
 	globrunqputbatch(&q, int32(n+1))
+	pushEventTrace("runqputslow releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("runqputslow released sched lock")
 	return true
 }
 
@@ -6061,9 +6338,14 @@ func runqputbatch(pp *p, q *gQueue, qsize int) {
 
 	atomic.StoreRel(&pp.runqtail, t)
 	if !q.empty() {
+		pushEventTrace("runqputbatch acquiring sched lock")
 		lock(&sched.lock)
+		pushEventTrace("runqputbatch acquired sched lock")
+
 		globrunqputbatch(q, int32(qsize))
+		pushEventTrace("runqputbatch releasing sched lock")
 		unlock(&sched.lock)
+		pushEventTrace("runqputbatch released sched lock")
 	}
 }
 
@@ -6314,7 +6596,10 @@ func (l *gList) pop() *g {
 
 //go:linkname setMaxThreads runtime/debug.setMaxThreads
 func setMaxThreads(in int) (out int) {
+	pushEventTrace("setMaxThreads acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("setMaxThreads acquired sched lock")
+
 	out = int(sched.maxmcount)
 	if in > 0x7fffffff { // MaxInt32
 		sched.maxmcount = 0x7fffffff
@@ -6322,7 +6607,9 @@ func setMaxThreads(in int) (out int) {
 		sched.maxmcount = int32(in)
 	}
 	checkmcount()
+	pushEventTrace("setMaxThreads releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("setMaxThreads released sched lock")
 	return
 }
 

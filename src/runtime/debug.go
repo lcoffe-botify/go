@@ -18,9 +18,14 @@ func GOMAXPROCS(n int) int {
 		n = 1 // WebAssembly has no threads yet, so only one CPU is possible.
 	}
 
+	pushEventTrace("GOMAXPROCS acquiring sched lock")
 	lock(&sched.lock)
+	pushEventTrace("GOMAXPROCS acquired sched lock")
 	ret := int(gomaxprocs)
+	pushEventTrace("GOMAXPROCS releasing sched lock")
 	unlock(&sched.lock)
+	pushEventTrace("GOMAXPROCS released sched lock")
+
 	if n <= 0 || n == ret {
 		return ret
 	}

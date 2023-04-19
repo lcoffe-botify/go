@@ -1204,6 +1204,8 @@ func startpanic_m() bool {
 		gp.m.locks = 1
 	}
 
+	printEventTrace()
+
 	switch gp.m.dying {
 	case 0:
 		// Setting dying >0 has the side-effect of disabling this G's writebuf.

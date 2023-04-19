@@ -318,6 +318,7 @@ var debug struct {
 	scavtrace          int32
 	scheddetail        int32
 	schedtrace         int32
+	eventtrace         int32
 	tracebackancestors int32
 	asyncpreemptoff    int32
 	harddecommit       int32
@@ -348,6 +349,7 @@ var dbgvars = []dbgVar{
 	{"scavtrace", &debug.scavtrace},
 	{"scheddetail", &debug.scheddetail},
 	{"schedtrace", &debug.schedtrace},
+	{"eventtrace", &debug.eventtrace},
 	{"tracebackancestors", &debug.tracebackancestors},
 	{"asyncpreemptoff", &debug.asyncpreemptoff},
 	{"inittrace", &debug.inittrace},
