@@ -2463,11 +2463,9 @@ func startm(pp *p, spinning bool, lockheld bool) {
 		// new M will eventually run the scheduler to execute any
 		// queued G's.
 		id := mReserveID()
-		if !lockheld {
-			pushEventTrace("mcommoninit releasing sched lock (2)")
-			unlock(&sched.lock)
-			pushEventTrace("mcommoninit released sched lock (2)")
-		}
+		pushEventTrace("mcommoninit releasing sched lock (2)")
+		unlock(&sched.lock)
+		pushEventTrace("mcommoninit released sched lock (2)")
 
 		var fn func()
 		if spinning {
@@ -2475,6 +2473,13 @@ func startm(pp *p, spinning bool, lockheld bool) {
 			fn = mspinning
 		}
 		newm(fn, pp, id)
+
+		if lockheld {
+			pushEventTrace("startm acquiring sched lock")
+			lock(&sched.lock)
+			pushEventTrace("startm acquired sched lock")
+		}
+
 		// Ownership transfer of pp committed by start in newm.
 		// Preemption is now safe.
 		releasem(mp)
